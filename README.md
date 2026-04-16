@@ -50,48 +50,32 @@ The agent parses these with string search and feeds the result back as the next 
 
 Each iteration's score is saved to `.evo/history.json`. On restart the agent resumes where it left off (iteration counter continues from the last saved entry).
 
-## Quick start
-
-### 1. Install Rust
+## Installation
 
 ```bash
+# Install Rust (if not already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
+source $HOME/.cargo/env
+
+# Clone the repository
+git clone https://github.com/Engineering4AI/AutoHarness
+cd AutoHarness
+
+# Set API key
+echo "OPENROUTER_API_KEY=sk-or-..." > .env
+
+# Build and run
+cargo build --release
+./target/release/auto-harness          # run the agent loop (10 iterations)
+./target/release/auto-harness eval     # print current score and exit
 ```
 
-### 2. Configure API key
-
-Create a `.env` file in the project root (loaded automatically on startup — no `export` needed):
-
-```env
-# OpenRouter (recommended — supports many models)
-OPENROUTER_API_KEY=sk-or-...
-
-# Optional overrides
-INFERENCE_BASE_URL=https://openrouter.ai/api/v1   # default
-MODEL_NAME=anthropic/claude-opus-4                 # default
-```
-
-Or export directly:
-
-```bash
-export OPENROUTER_API_KEY=sk-or-...
-```
-
-Or any OpenAI-compatible endpoint (Ollama, vLLM, Together, etc.):
+Any OpenAI-compatible endpoint works (Ollama, vLLM, Together, etc.):
 
 ```bash
 export OPENROUTER_API_KEY=anything
 export INFERENCE_BASE_URL=http://localhost:11434/v1
 export MODEL_NAME=llama3
-```
-
-### 3. Build and run
-
-```bash
-cargo build --release
-./target/release/auto-harness          # run the agent loop (10 iterations)
-./target/release/auto-harness eval     # print current score and exit
 ```
 
 ## File layout
@@ -129,3 +113,16 @@ cargo build --release
 ```
 
 If a rewrite lowers the score, the agent automatically restores `src/main.rs.bak`. If patience (3 consecutive non-improving iterations) is exhausted, the loop stops early.
+
+## Citation
+
+If you use AutoHarness in your research, please cite:
+
+```bibtex
+@software{autoharness2026,
+  title  = {AutoHarness: A Self-Evolving Coding Agent in Rust},
+  author = {Zhao, Zhimin},
+  year   = {2026},
+  url    = {https://github.com/Engineering4AI/AutoHarness}
+}
+```
