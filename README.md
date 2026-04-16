@@ -100,7 +100,7 @@ cargo build --release
 .
 ├── Cargo.toml              # ureq + serde + serde_json
 ├── src/
-│   ├── main.rs             # the entire agent (~200 lines)
+│   ├── main.rs             # the entire agent (~270 lines)
 │   └── main.rs.bak         # last known-good version (auto-created)
 ├── .env                    # API keys (not committed)
 └── .evo/
@@ -115,7 +115,7 @@ cargo build --release
 | `INFERENCE_BASE_URL` | `https://openrouter.ai/api/v1` | Any OpenAI-compat base URL |
 | `MODEL_NAME` | `anthropic/claude-opus-4` | Model identifier |
 
-`MAX_ITERS` (default `10`) is a compile-time constant in `src/main.rs`.
+`MAX_ITERS` (default `10`) and `PATIENCE` (default `3`) are compile-time constants in `src/main.rs`.
 
 ## What happens on each run
 
@@ -128,7 +128,4 @@ cargo build --release
 [evo] done. 1 total iterations.
 ```
 
-If the score drops after a rewrite, the agent warns you — revert with:
-```bash
-cp src/main.rs.bak src/main.rs
-```
+If a rewrite lowers the score, the agent automatically restores `src/main.rs.bak`. If patience (3 consecutive non-improving iterations) is exhausted, the loop stops early.

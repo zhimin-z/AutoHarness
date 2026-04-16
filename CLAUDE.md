@@ -19,6 +19,7 @@ cargo build --release
 | `SELF_PATH` | `src/main.rs` | File the agent reads and rewrites |
 | `HISTORY_PATH` | `.evo/history.json` | Iteration history |
 | `MAX_ITERS` | `10` | Iterations per run |
+| `PATIENCE` | `3` | Stop early if score doesn't improve for N consecutive iterations |
 
 ## Scoring function
 
@@ -43,13 +44,16 @@ Only one tool per LLM turn. Results are fed back as `<tool_result>...</tool_resu
 
 `write_self` never leaves a broken file on disk:
 
-1. Back up current `src/main.rs` to `src/main.rs.bak`
-2. Write the new content
-3. Run `cargo build --release`
-4. If build fails → restore backup, report compiler error to LLM so it can retry
-5. If build passes → keep new file, update `.bak`
+1. Reject immediately if content is empty
+2. Back up current `src/main.rs` to `src/main.rs.bak`
+3. Write the new content
+4. Run `cargo build --release`
+5. If build fails → restore backup, report compiler error to LLM so it can retry
+6. If build passes → keep new file, update `.bak`
 
 The LLM sees the full compiler error and can self-correct without human intervention.
+
+After each iteration, if the score drops the agent auto-reverts to `.bak`. If `PATIENCE` consecutive iterations show no improvement, the loop stops early.
 
 ## Environment variables
 

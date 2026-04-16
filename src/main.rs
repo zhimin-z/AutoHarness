@@ -8,6 +8,7 @@ use std::process::Command;
 const SELF_PATH: &str = "src/main.rs";
 const HISTORY_PATH: &str = ".evo/history.json";
 const MAX_ITERS: usize = 10;
+const PATIENCE: usize = 3;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -122,6 +123,7 @@ fn run_tool(text: &str) -> Option<(String, String)> {
                 let s = s.strip_suffix("```").unwrap_or(s);
                 s.trim()
             };
+            if code.is_empty() { return Some(("write_self".to_string(), "REJECTED (empty content)".to_string())); }
             // Safety: backup → write → build-verify → restore on failure
             let backup = fs::read_to_string(SELF_PATH).unwrap_or_default();
             fs::write(SELF_PATH, code).ok()?;
@@ -183,8 +185,9 @@ fn agent_loop(cfg: &Cfg) {
     let mut history = load_history();
     let n_done = history.len();
     println!("[evo] starting at iteration {} / {MAX_ITERS}", n_done + 1);
+    let mut no_improve = 0usize;
 
-    for iter in (n_done + 1)..=(n_done + MAX_ITERS) {
+    'outer: for iter in (n_done + 1)..=(n_done + MAX_ITERS) {
         let src = fs::read_to_string(SELF_PATH).unwrap_or_default();
         let score_before = eval_self();
 
@@ -233,8 +236,11 @@ fn agent_loop(cfg: &Cfg) {
         save_history(&history);
 
         if score_after < score_before {
-            println!("[evo] score dropped. Revert with: cp src/main.rs.bak src/main.rs");
+            fs::copy(format!("{SELF_PATH}.bak"), SELF_PATH).ok();
+            println!("[evo] score dropped — auto-reverted");
         }
+        if score_after <= score_before { no_improve += 1; } else { no_improve = 0; }
+        if no_improve >= PATIENCE { println!("[evo] patience exhausted"); break 'outer; }
     }
     println!("[evo] done. {} total iterations.", history.len());
 }
