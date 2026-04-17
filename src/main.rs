@@ -82,7 +82,7 @@ fn is_new_task(cfg: &Cfg, history: &[Msg], next_input: &str) -> bool {
     msgs.push(Msg { role: "user".to_string(), content: json!(next_input) });
     match llm(cfg, &msgs, system) {
         Ok(r) => r.trim().to_uppercase().starts_with("NEW"),
-        Err(_) => false,
+        Err(e) => { eprintln!("Task-judge error (defaulting CONTINUE): {e}"); false }
     }
 }
 
@@ -164,8 +164,6 @@ fn run_tool(text: &str, traj: &str, evolve_mode: bool) -> Option<String> {
 }
 
 fn chat_mode(cfg: &Cfg, session_ts: &str, traj: &str) {
-    let traj_dir = format!(".evo/sessions/{session_ts}");
-    fs::create_dir_all(&traj_dir).ok();
     traj_log(traj, "session_start", json!({}));
 
     let queue: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
@@ -196,6 +194,11 @@ fn chat_mode(cfg: &Cfg, session_ts: &str, traj: &str) {
                 break line;
             }
             drop(q);
+            // Check if stdin thread has exited (EOF)
+            if Arc::strong_count(&queue) == 1 {
+                traj_log(traj, "session_end", json!({"turns": task_n}));
+                return;
+            }
             std::thread::sleep(Duration::from_millis(50));
         };
 
@@ -210,7 +213,8 @@ fn chat_mode(cfg: &Cfg, session_ts: &str, traj: &str) {
             traj_log(traj, "task_boundary", json!({"task": task_n}));
         }
 
-        messages.push(Msg { role: "user".to_string(), content: json!(input) });
+        let stamped = format!("[output_dir: {out_dir}]\n{input}");
+        messages.push(Msg { role: "user".to_string(), content: json!(stamped) });
         if messages.len() > 20 { messages.drain(..messages.len() - 20); }
 
         for turn in 1..=8 {
@@ -299,12 +303,11 @@ fn reflect(cfg: &Cfg, traj: &str) {
             Ok(suggestion) => {
                 eprintln!("Reflection [{session_ts}]: {suggestion}");
                 traj_log(traj, "reflect_result", json!(suggestion));
+                fs::create_dir_all(".evo").ok();
+                fs::write(WATERMARK_PATH, session_ts.to_string()).ok();
             }
             Err(e) => eprintln!("Reflection LLM error [{session_ts}]: {e}"),
         }
-
-        fs::create_dir_all(".evo").ok();
-        fs::write(WATERMARK_PATH, session_ts.to_string()).ok();
     }
 }
 
@@ -322,10 +325,17 @@ fn evolve_mode(cfg: &Cfg, traj: &str) {
         traj_log(traj, "iter_start", json!({"iter": iter}));
         let src = fs::read_to_string(SELF_PATH).unwrap_or_default();
         let agents_md = fs::read_to_string(agents_path).unwrap_or_default();
+        let prompts_section = {
+            let names = ["chat_system.txt", "reflect_system.txt", "evolve_system.txt", "doc_system.txt"];
+            names.iter().map(|n| {
+                let content = fs::read_to_string(format!("src/prompts/{n}")).unwrap_or_default();
+                format!("=== src/prompts/{n} ===\n{content}")
+            }).collect::<Vec<_>>().join("\n\n")
+        };
         let mut messages: Vec<Msg> = vec![Msg {
             role: "user".to_string(),
             content: json!(format!(
-                "Current src/main.rs:\n```rust\n{src}\n```\n\nCurrent src/AGENTS.md:\n{agents_md}\n\nPropose one improvement to either file, or reply SKIP."
+                "Current prompt files (highest priority to improve):\n{prompts_section}\n\nCurrent src/AGENTS.md:\n{agents_md}\n\nCurrent src/main.rs:\n```rust\n{src}\n```\n\nPropose one improvement. Priority: prompts > AGENTS.md > main.rs. Reply SKIP if nothing is worth changing."
             )),
         }];
 
@@ -381,7 +391,7 @@ fn evolve_mode(cfg: &Cfg, traj: &str) {
         match llm(cfg, &doc_msgs, &doc_system) {
             Ok(reply) => {
                 doc_msgs.push(Msg { role: "assistant".to_string(), content: json!(&reply) });
-                if let Some(result) = run_tool(&reply, traj, false) {
+                if let Some(result) = run_tool(&reply, traj, true) {
                     doc_msgs.push(Msg { role: "user".to_string(), content: json!(result) });
                 } else {
                     break;
@@ -389,6 +399,49 @@ fn evolve_mode(cfg: &Cfg, traj: &str) {
             }
             Err(e) => { eprintln!("Doc update LLM error: {e}"); break; }
         }
+    }
+
+    // Final lint + test to verify evolved binary is healthy
+    eprintln!("Running post-evolution lint and tests...");
+    let clippy = Command::new("cargo")
+        .args(["clippy", "--release", "--", "-D", "warnings"])
+        .output();
+    let (clippy_ok, clippy_out) = match clippy {
+        Ok(o) => {
+            let out = String::from_utf8_lossy(&o.stderr).chars().take(2000).collect::<String>();
+            (o.status.success(), out)
+        }
+        Err(e) => (false, e.to_string()),
+    };
+    traj_log(traj, "lint_result", json!({"ok": clippy_ok, "output": &clippy_out}));
+    if clippy_ok {
+        eprintln!("Lint: PASS");
+    } else {
+        eprintln!("Lint: FAIL\n{clippy_out}");
+    }
+
+    let test = Command::new("cargo").args(["test", "--release"]).output();
+    let (test_ok, test_out) = match test {
+        Ok(o) => {
+            let combined = format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            let out = combined.chars().take(2000).collect::<String>();
+            (o.status.success(), out)
+        }
+        Err(e) => (false, e.to_string()),
+    };
+    traj_log(traj, "test_result", json!({"ok": test_ok, "output": &test_out}));
+    if test_ok {
+        eprintln!("Tests: PASS");
+    } else {
+        eprintln!("Tests: FAIL\n{test_out}");
+    }
+
+    if !clippy_ok || !test_ok {
+        eprintln!("WARNING: evolved binary has lint/test failures. Review traj for details.");
     }
 }
 

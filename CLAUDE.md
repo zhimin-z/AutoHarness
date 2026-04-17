@@ -41,6 +41,7 @@ Task grouping: the LLM judges each new message as `NEW` or `CONTINUE`. Each task
 1. **Reflect**: reads session trajs newer than the watermark → asks LLM for one concrete improvement suggestion → advances watermark.
 2. **Evolve**: up to `MAX_ITERS` iterations. Each iter shows the LLM `src/main.rs` + `src/AGENTS.md` → LLM proposes one change via `write_self` or `write_file` → verified. Stops on `SKIP` or `PATIENCE` consecutive non-improving iters.
 3. **Doc update**: after the loop, LLM rewrites `CLAUDE.md` and `README.md` via `write_file`.
+4. **Lint + test**: `cargo clippy -- -D warnings` then `cargo test --release`; results logged to traj as `lint_result`/`test_result`; failures print a WARNING to stderr.
 
 ## Evolvable artifacts
 
