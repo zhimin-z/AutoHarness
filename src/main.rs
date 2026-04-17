@@ -190,7 +190,6 @@ fn chat_mode(cfg: &Cfg, session_ts: &str, traj: &str) {
     fs::create_dir_all(&out_dir).ok();
 
     eprintln!("Chat mode. Ctrl+C or Ctrl+D to quit.");
-    let mut turns = 0usize;
 
     loop {
         let input = loop {
@@ -232,12 +231,8 @@ fn chat_mode(cfg: &Cfg, session_ts: &str, traj: &str) {
             } else {
                 break;
             }
-            turns += 1;
         }
-        turns += 1;
     }
-
-    traj_log(traj, "session_end", json!({"turns": turns}));
 }
 
 fn reflect(cfg: &Cfg, traj: &str) {
@@ -319,7 +314,7 @@ fn reflect(cfg: &Cfg, traj: &str) {
     fs::write(WATERMARK_PATH, &ts).ok();
 }
 
-fn evolve_mode(cfg: &Cfg, traj: &str, _out_dir: &str) {
+fn evolve_mode(cfg: &Cfg, traj: &str) {
     reflect(cfg, traj);
 
     let evolve_system = concat!(
@@ -419,9 +414,6 @@ fn main() {
     let traj_dir = format!(".evo/sessions/{ts}");
     fs::create_dir_all(&traj_dir).ok();
     let traj = format!("{traj_dir}/traj.jsonl");
-    let out_dir = format!("outputs/{ts}/task_1");
-    fs::create_dir_all(&out_dir).ok();
-
     // load .env
     if let Ok(content) = fs::read_to_string(".env") {
         for line in content.lines() {
@@ -438,7 +430,7 @@ fn main() {
     let cfg = Cfg::from_env();
 
     match env::args().nth(1).as_deref() {
-        Some("evolve") => evolve_mode(&cfg, &traj, &out_dir),
+        Some("evolve") => evolve_mode(&cfg, &traj),
         None           => chat_mode(&cfg, &ts, &traj),
         Some(cmd)      => { eprintln!("unknown subcommand: {cmd}"); std::process::exit(1); }
     }
