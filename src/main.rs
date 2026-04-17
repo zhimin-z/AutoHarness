@@ -241,77 +241,77 @@ fn reflect(cfg: &Cfg, traj: &str) {
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(0);
 
-    let mut all_lines: Vec<String> = vec![];
-    if let Ok(entries) = fs::read_dir(".evo/sessions") {
-        let mut sessions: Vec<_> = entries.flatten()
+    let sessions: Vec<_> = if let Ok(entries) = fs::read_dir(".evo/sessions") {
+        let mut v: Vec<_> = entries.flatten()
             .filter(|e| {
                 e.path().is_dir() &&
                 e.file_name().to_string_lossy().parse::<u64>().map(|ts| ts > watermark).unwrap_or(false)
             })
             .collect();
-        sessions.sort_by_key(|e| e.file_name());
-        for entry in &sessions {
-            let traj_path = entry.path().join("traj.jsonl");
-            if let Ok(content) = fs::read_to_string(&traj_path) {
-                all_lines.extend(content.lines().map(|l| l.to_string()));
-            }
-        }
-    }
+        v.sort_by_key(|e| e.file_name());
+        v
+    } else {
+        vec![]
+    };
 
-    if all_lines.is_empty() {
+    if sessions.is_empty() {
         eprintln!("No new sessions to reflect on.");
-        let ts = now_secs().to_string();
         fs::create_dir_all(".evo").ok();
-        fs::write(WATERMARK_PATH, &ts).ok();
+        fs::write(WATERMARK_PATH, now_secs().to_string()).ok();
         return;
     }
-
-    // Progressive disclosure: strip large fields, cap strings, limit total size
-    let sample: String = {
-        let stripped: Vec<String> = all_lines.iter().rev()
-            .filter_map(|l| {
-                let mut v: Value = serde_json::from_str(l).ok()?;
-                if let Some(obj) = v.get_mut("data") {
-                    if let Some(map) = obj.as_object_mut() {
-                        map.remove("content");
-                        map.remove("preview");
-                    } else if obj.is_string() && obj.as_str().map(|s| s.len()).unwrap_or(0) > 120 {
-                        *obj = json!(obj.as_str().unwrap_or("").chars().take(120).collect::<String>());
-                    }
-                }
-                Some(v.to_string())
-            })
-            .collect::<Vec<_>>()
-            .into_iter().rev().collect();
-        let joined = stripped.join("\n");
-        // take last 8000 chars
-        if joined.len() > 8000 {
-            joined[joined.len() - 8000..].to_string()
-        } else {
-            joined
-        }
-    };
 
     let system = concat!(
         "You are analyzing trajectory logs from an AI coding agent. ",
         "Identify ONE concrete, actionable improvement to the agent's src/main.rs. ",
         "Be specific. One sentence."
     );
-    let msgs = vec![Msg {
-        role: "user".to_string(),
-        content: json!(format!("Recent session events:\n{sample}\n\nWhat is the single most important improvement?")),
-    }];
-    match llm(cfg, &msgs, system) {
-        Ok(suggestion) => {
-            eprintln!("Reflection: {suggestion}");
-            traj_log(traj, "reflect_result", json!(suggestion));
-        }
-        Err(e) => eprintln!("Reflection LLM error: {e}"),
-    }
 
-    let ts = now_secs().to_string();
-    fs::create_dir_all(".evo").ok();
-    fs::write(WATERMARK_PATH, &ts).ok();
+    for entry in &sessions {
+        let session_ts: u64 = entry.file_name().to_string_lossy().parse().unwrap_or(0);
+        let traj_path = entry.path().join("traj.jsonl");
+        let lines: Vec<String> = fs::read_to_string(&traj_path)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.to_string())
+            .collect();
+
+        // Progressive disclosure: strip large fields, cap strings, limit to 8000 chars
+        let sample: String = {
+            let stripped: Vec<String> = lines.iter().rev()
+                .filter_map(|l| {
+                    let mut v: Value = serde_json::from_str(l).ok()?;
+                    if let Some(obj) = v.get_mut("data") {
+                        if let Some(map) = obj.as_object_mut() {
+                            map.remove("content");
+                            map.remove("preview");
+                        } else if obj.is_string() && obj.as_str().map(|s| s.len()).unwrap_or(0) > 120 {
+                            *obj = json!(obj.as_str().unwrap_or("").chars().take(120).collect::<String>());
+                        }
+                    }
+                    Some(v.to_string())
+                })
+                .collect::<Vec<_>>()
+                .into_iter().rev().collect();
+            let joined = stripped.join("\n");
+            if joined.len() > 8000 { joined[joined.len() - 8000..].to_string() } else { joined }
+        };
+
+        let msgs = vec![Msg {
+            role: "user".to_string(),
+            content: json!(format!("Session {session_ts} events:\n{sample}\n\nWhat is the single most important improvement?")),
+        }];
+        match llm(cfg, &msgs, system) {
+            Ok(suggestion) => {
+                eprintln!("Reflection [{session_ts}]: {suggestion}");
+                traj_log(traj, "reflect_result", json!(suggestion));
+            }
+            Err(e) => eprintln!("Reflection LLM error [{session_ts}]: {e}"),
+        }
+
+        fs::create_dir_all(".evo").ok();
+        fs::write(WATERMARK_PATH, session_ts.to_string()).ok();
+    }
 }
 
 fn evolve_mode(cfg: &Cfg, traj: &str) {
