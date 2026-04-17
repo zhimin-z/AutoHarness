@@ -41,13 +41,17 @@ cargo build --release
 ./target/release/auto-harness evolve
 ```
 
-Use any OpenAI-compatible backend:
+Use any OpenAI-compatible backend.
+`OPENROUTER_API_KEY` is always read by the binary and sent as the Bearer token, so it must be set:
 
 ```bash
-export OPENROUTER_API_KEY=anything
+# For a local OpenAI-compatible endpoint, any placeholder token value is fine.
+export OPENROUTER_API_KEY=unused
 export INFERENCE_BASE_URL=http://localhost:11434/v1
 export MODEL_NAME=llama3
 ```
+
+If you are using OpenRouter itself, set `OPENROUTER_API_KEY` to your real OpenRouter API key.
 
 ---
 
@@ -69,16 +73,17 @@ flowchart TD
     D1 --> D2[evolution loop up to MAX_ITERS]
     D2 --> D3{LLM reply}
     D3 -->|SKIP| D5[exit loop]
-    D3 -->|write_self| D4[backup → write → cargo build]
+    D3 -->|write_self| D4[backup → write → cargo build --release]
     D4 -->|fail| D6[restore and report error]
     D6 --> D2
     D4 -->|pass| D8{improved?}
     D3 -->|write_file| D9[write prompts / AGENTS.md]
     D9 --> D8
     D8 -->|yes| D2
+    D8 -->|no and streak < PATIENCE / streak += 1| D2
     D8 -->|no and streak >= PATIENCE| D5
     D5 --> D7[doc update: CLAUDE.md + README.md]
-    D7 --> D11[cargo clippy -D warnings]
+    D7 --> D11[cargo clippy --release -- -D warnings]
     D11 --> D12[cargo test --release]
 ```
 
@@ -96,7 +101,7 @@ flowchart TD
 1. **Reflect:** analyze unprocessed trajectories and produce one concrete improvement
 2. **Evolve:** iterate up to `MAX_ITERS`, applying one LLM-proposed change per iteration
 3. **Doc update:** rewrite `CLAUDE.md` and `README.md`
-4. **Validate:** run `cargo clippy -- -D warnings` and `cargo test --release`
+4. **Validate:** run `cargo clippy --release -- -D warnings` and `cargo test --release`
 
 ---
 
