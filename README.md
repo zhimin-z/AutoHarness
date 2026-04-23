@@ -19,12 +19,9 @@
 
 ## ✨ What is AutoHarness?
 
-AutoHarness is a compact Rust agent with two modes:
+AutoHarness is a compact Rust agent that runs as an interactive REPL. It logs everything to `.evo/`, verifies self-edits with `cargo build --release`, and uses the LLM as the judge — no numeric reward model.
 
-- **Interactive chat mode** for normal task execution
-- **Evolution mode** where it reflects on trajectories and rewrites parts of itself
-
-It logs everything, verifies self-edits with `cargo build --release`, and uses the LLM as the judge (no numeric reward model).
+Type `/evolve` inside the running agent to trigger a reflection + self-improvement loop. When evolution finishes, the process re-execs itself with the updated binary automatically.
 
 ---
 
@@ -34,24 +31,24 @@ It logs everything, verifies self-edits with `cargo build --release`, and uses t
 # Build
 cargo build --release
 
-# Run chat mode
+# Run
 ./target/release/auto-harness
-
-# Run evolution mode
-./target/release/auto-harness evolve
+# Inside the REPL:
+#   /evolve   — reflect on past sessions and rewrite the agent, then relaunch
+#   /exit     — clean shutdown
 ```
 
-Use any OpenAI-compatible backend.
-`OPENROUTER_API_KEY` is always read by the binary and sent as the Bearer token, so it must be set:
+Use any OpenAI-compatible backend:
 
 ```bash
-# For a local OpenAI-compatible endpoint, any placeholder token value is fine.
+# Local model (Ollama)
 export OPENROUTER_API_KEY=unused
 export INFERENCE_BASE_URL=http://localhost:11434/v1
 export MODEL_NAME=llama3
-```
 
-If you are using OpenRouter itself, set `OPENROUTER_API_KEY` to your real OpenRouter API key.
+# OpenRouter
+export OPENROUTER_API_KEY=<your-key>
+```
 
 ---
 
@@ -59,49 +56,51 @@ If you are using OpenRouter itself, set `OPENROUTER_API_KEY` to your real OpenRo
 
 ```mermaid
 flowchart TD
-    A[auto-harness] --> B{subcommand?}
-    B -->|none| C[chat mode]
-    B -->|evolve| D[evolve mode]
+    A[auto-harness] --> B[interactive REPL]
 
-    C --> C1[async stdin queue]
-    C1 --> C2[LLM judge: NEW or CONTINUE]
-    C2 --> C3[send to LLM and print reply]
-    C3 --> C4[run tool if present]
-    C4 --> C1
+    B --> C{input}
+    C -->|/exit| Z[clean shutdown]
+    C -->|/evolve| D[evolve loop]
+    C -->|user message| E[LLM judge: NEW or CONTINUE task]
+    E --> F[send to LLM + print reply]
+    F --> G[run tool if present]
+    G --> C
 
     D --> D1[reflect on unprocessed trajs]
     D1 --> D2[evolution loop up to MAX_ITERS]
     D2 --> D3{LLM reply}
     D3 -->|SKIP| D5[exit loop]
-    D3 -->|write_self| D4[backup → write → cargo build --release]
-    D4 -->|fail| D6[restore and report error]
+    D3 -->|write_self| D4[backup → write → cargo build]
+    D4 -->|fail| D6[restore + report error]
     D6 --> D2
     D4 -->|pass| D8{improved?}
     D3 -->|write_file| D9[write prompts / AGENTS.md]
     D9 --> D8
     D8 -->|yes| D2
-    D8 -->|no and streak < PATIENCE / streak += 1| D2
-    D8 -->|no and streak >= PATIENCE| D5
+    D8 -->|no, streak < PATIENCE| D2
+    D8 -->|no, streak >= PATIENCE| D5
     D5 --> D7[doc update: CLAUDE.md + README.md]
-    D7 --> D11[cargo clippy --release -- -D warnings]
-    D11 --> D12[cargo test --release]
+    D7 --> D10[clippy + cargo test]
+    D10 --> D11[exec evolved binary]
 ```
 
 ---
 
-## 🔧 Modes
+## 🔧 Operation
 
-### Chat Mode (default)
-- REPL with async stdin queue (`VecDeque`)
+### Interactive REPL
+- Async stdin queue (`VecDeque` fed by a background thread)
 - LLM decides if each message starts a **new task** or **continues** the current one
-- Artifacts are separated into `outputs/<ts>/task_N`
-- Events are logged to `.evo/sessions/<ts>/traj.jsonl`
+- Task artifacts go to `outputs/<ts>/task_N/`
+- All events logged to `.evo/sessions/<ts>/traj.jsonl`
+- Slash commands: `/exit` (quit), `/evolve` (evolve + relaunch)
 
-### Evolve Mode (`auto-harness evolve`)
-1. **Reflect:** analyze unprocessed trajectories and produce one concrete improvement
-2. **Evolve:** iterate up to `MAX_ITERS`, applying one LLM-proposed change per iteration
+### `/evolve`
+1. **Reflect:** analyze unprocessed trajectories → one concrete improvement suggestion
+2. **Evolve:** up to `MAX_ITERS` iterations, one LLM-proposed change per iter (`write_self` or `write_file`)
 3. **Doc update:** rewrite `CLAUDE.md` and `README.md`
-4. **Validate:** run `cargo clippy --release -- -D warnings` and `cargo test --release`
+4. **Validate:** `cargo clippy --release -- -D warnings` + `cargo test --release`
+5. **Relaunch:** `exec()` replaces the process with the freshly-built binary
 
 ---
 

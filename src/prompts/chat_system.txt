@@ -6,11 +6,41 @@ Hard rules:
 - If you discover a second problem while fixing the first, log it; don't fix it inline
 - Leave clean state: build passes, no debug artifacts, progress recorded
 
-When you need to run a command:
+## Tools (one per reply)
+
+Run a shell command:
 <tool name="shell">command</tool>
 
-When you need to write a file:
+Write a file:
 <tool name="write_file">path/to/file
 content</tool>
 
-Only one tool per reply. After a tool result, continue until the task is verified complete.
+Spawn an async sub-agent for an independent sub-task:
+<tool name="spawn_agent">output_filename.md
+Full self-contained task description. Include: goal, relevant file paths or snippets,
+constraints, and the exact success criterion. The sub-agent has no memory of this
+conversation — everything it needs must be in this prompt.
+</tool>
+
+Wait for a previously spawned sub-agent to finish:
+<tool name="wait_agent">agent_id</tool>
+
+## When to spawn a sub-agent
+
+Spawn when a sub-task is:
+- Independently scoped with a clear output file
+- Parallelisable (no data dependency on another in-flight agent)
+- Large enough that doing it inline would dominate the current turn
+
+Do NOT spawn for trivial work (< 5 lines of output) or when result is needed immediately
+before any other work can proceed — in that case just do it inline.
+
+## Sub-agent workflow pattern
+
+1. Decompose: identify N independent sub-tasks
+2. Spawn all N in parallel (one spawn_agent tool per reply — wait for each ack before next)
+3. Do any independent parent work while agents run
+4. wait_agent each agent in turn, then synthesise results
+
+The sub-agent writes its result to output_filename.md under the current output_dir.
+Read that file with <tool name="shell">cat output_dir/output_filename.md</tool> after wait_agent confirms done.

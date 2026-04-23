@@ -1,74 +1,112 @@
 # Agent Orchestration Patterns
 
+## Tools available in chat mode
+
+| Tool | Purpose |
+|---|---|
+| `shell` | Run any shell command; output capped at 2000 chars |
+| `write_file` | Write any file |
+| `spawn_agent` | Launch an async sub-agent in a background thread |
+| `wait_agent` | Block until a spawned sub-agent finishes |
+
+## spawn_agent format
+
+```
+<tool name="spawn_agent">output_filename.md
+Full self-contained task description. Include goal, file paths, snippets,
+constraints, and the exact success criterion.
+</tool>
+```
+
+The runtime returns: `spawned agent_id=agent_<ts> output_path=<dir>/<file>`
+
+## wait_agent format
+
+```
+<tool name="wait_agent">agent_<ts></tool>
+```
+
+Returns when the sub-agent finishes. Read the output file afterward with `shell`.
+
 ## When to spawn a sub-agent
-- Task is independently scoped with a clear completion criterion
-- Isolation is needed: parallel work, large context, or risky/destructive operation
-- Two or more sub-tasks share no data dependency → fan-out immediately
-- Task requires a different "role" (planner vs executor vs reviewer)
 
-## Context handoff discipline (the sub-agent starts fresh — act accordingly)
-- Prompt must be fully self-contained: goal, relevant file paths, key snippets, constraints
-- Never reference "the work above" or "what we discussed" — sub-agent has no parent memory
-- State the expected output explicitly: file path, format, and success criterion
-- Include hard constraints the sub-agent must not violate (e.g. no new deps, keep LOC low)
+Spawn when ALL of these hold:
+- Sub-task has a clear, bounded output (a file with a known path)
+- Sub-task is independent — no data dependency on another in-flight agent
+- Sub-task is large enough to justify a separate context (> ~10 lines of non-trivial work)
 
-## Parent behavior while sub-agent runs
-- Independent sub-tasks: launch ALL in parallel (single message, multiple tool calls)
-- Dependent steps: wait for result before issuing the next call — no polling, no sleeping
-- Never use sleep to wait for a sub-agent; use foreground blocking or background notification
-- If a sub-agent errors, the parent re-briefs it with the error rather than fixing it inline
+Do NOT spawn for:
+- Trivial lookups or < 5-line outputs — do inline
+- Tasks whose result is needed before any other work can start — do inline
+- Tasks that require access to the current conversation history — sub-agents start fresh
 
-## Team patterns
+## Parallel fan-out pattern
 
-### Fan-out (parallel, independent)
-Parent decomposes work → N agents each own one slice → parent merges outputs.
-Use when: N files to analyse, N endpoints to implement, N tests to write — no ordering needed.
+When N sub-tasks are independent, spawn all N before waiting for any:
 
-### Chain (sequential, dependent)
-Agent A produces output → Agent B consumes it → … → final result.
-Use when: each step needs the previous result (plan → implement → review).
+```
+Turn 1: spawn_agent → agent_A ack
+Turn 2: spawn_agent → agent_B ack
+Turn 3: spawn_agent → agent_C ack
+Turn 4: wait_agent agent_A → done; read output
+Turn 5: wait_agent agent_B → done; read output
+Turn 6: wait_agent agent_C → done; synthesise
+```
 
-### Planner + Executor
-Planner reads code, produces a step-by-step spec (write to file). Executor reads spec, implements.
-Planner never writes code. Executor never makes design decisions.
-Use when: task is large enough that design and implementation are separable concerns.
+Never spawn-and-immediately-wait in the same sub-task — that is just slow sequential.
 
-### Executor + Reviewer
-Executor produces a diff or file. Reviewer reads it and produces a severity-rated critique.
-Executor applies critiques in a second pass.
-Use when: correctness or security matters more than speed.
+## Context handoff discipline (sub-agent starts fresh)
 
-### Parallel Specialists
-Each agent is expert in one domain (security, performance, correctness). All run in parallel on same artifact. Parent synthesises reports.
-Use when: multi-dimensional review is needed and dimensions are independent.
+Every spawn_agent body must be fully self-contained:
+- State the goal in one sentence
+- Include relevant file paths and key snippets (< 200 lines total)
+- State hard constraints explicitly (e.g. "no new deps", "keep LOC < 500")
+- State the success criterion: what command proves the task is done?
+- State the exact output file path the sub-agent must write to
+
+Never reference "the work above" or "what we discussed" — the sub-agent has no parent memory.
 
 ## Output contract (survives context compaction)
-- Every sub-agent MUST write results to an absolute-path file before returning
-- Terminal summary is optional and secondary — the file is the contract
-- Parent reads the file, not the summary, to continue work
-- File naming: `outputs/<session_ts>/task_<N>/<artifact>` or an absolute path the parent specifies
+
+- Sub-agent MUST write results to the specified output file before finishing
+- Parent reads the file with `shell cat <path>`, not the wait_agent summary
+- File naming: use the `output_filename.md` first line of the spawn_agent body
+
+## Effective task decomposition
+
+Good decomposition: each slice has a single owner, a single output file, and a clear done state.
+
+| Pattern | Use when |
+|---|---|
+| Fan-out: N parallel agents | N files to analyse, N endpoints to write, N tests — no ordering |
+| Chain: A → B → C | Each step needs the previous result (plan → implement → review) |
+| Planner + Executor | Task large enough that design and implementation are separable |
+| Executor + Reviewer | Correctness or security matters more than speed |
 
 ## Verification discipline
-- "Done" means behavior passes a concrete verification command, not "code looks correct"
-- Each task must have an associated verification command stated upfront
-- Sub-agent must run verification and include the result in its output file
-- If verification fails, sub-agent reports failure with exact error — parent decides next step
+
+- Every sub-agent task must include a verification command in the prompt
+- Sub-agent runs it and records `PASS` / `FAIL` + exact output in the result file
+- Parent checks for `PASS` before accepting the sub-agent's work
+- If `FAIL`, parent re-briefs the sub-agent with the error — does not fix inline
 
 ## Scope discipline (WIP = 1)
-- One active task per agent at a time; finishing and verifying beats starting three
-- If agent discovers a second problem while fixing the first, log it — don't fix it inline
-- Atomic commits: one logical change per commit, all tests passing before committing
+
+- One active logical task per agent at a time
+- If sub-agent discovers a second problem, it logs it in the output file and stops
+- Parent decides whether to spawn a follow-up agent for the logged issue
 
 ## Session continuity
+
 - Before context fills: write PROGRESS.md (done / in-progress / blocked / next step)
-- Design decisions go in DECISIONS.md with rationale — not in comments, not in summaries
-- A fresh session must be able to answer "what is this?", "how do I run it?", "what's next?" from repo alone
+- Design decisions go in DECISIONS.md with rationale
+- A fresh session must answer "what is this?", "how do I run it?", "what's next?" from repo alone
 - Rebuild cost target: < 3 minutes from cold start to executable state
 
 ## Anti-patterns to avoid
-- Instruction bloat: one 600-line file that tries to contain everything → use routing files
-- Critical rules buried in the middle of a long prompt → put them at top or bottom
-- "Mostly done" progress updates → always include a concrete next executable step
-- Accepting "code looks fine" as evidence → only passing verification counts
-- Mixing initialization and implementation → dedicate a phase to each
-- Deferring cleanup → entropy compounds; clean state at every session end
+
+- Spawning a sub-agent then immediately waiting — use inline work instead
+- Spawn prompt that says "see previous context" — sub-agent starts fresh every time
+- Accepting "output file written" as done without reading and verifying its contents
+- Spawning more agents than there are independent sub-tasks — merging is not free
+- Long spawn prompts that bury the success criterion — put it in the first 3 lines

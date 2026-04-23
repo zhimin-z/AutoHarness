@@ -9,14 +9,13 @@
 
 ## Project overview
 
-Single-binary Rust agent with two modes: an interactive CLI that logs everything to `.evo/`, and a self-evolution mode that reflects on past trajectories and rewrites its own source and prompts. The LLM is the judge — no numeric scoring.
+Single-binary Rust agent. Always starts as an interactive REPL. Type `/evolve` to run a reflection + code-evolution loop and relaunch the evolved binary. The LLM is the judge — no numeric scoring.
 
 ## Build & run
 
 ```bash
 cargo build --release
-./target/release/auto-harness          # interactive chat (logs to .evo/)
-./target/release/auto-harness evolve   # reflect on trajs + run code evolution loop
+./target/release/auto-harness   # interactive REPL; /exit to quit, /evolve to evolve + relaunch
 ```
 
 ## Key constants (src/main.rs)
@@ -28,20 +27,25 @@ cargo build --release
 | `PATIENCE` | `3` | Stop early if no improvement for N consecutive iters |
 | `WATERMARK_PATH` | `.evo/learned_until.txt` | Timestamp of last reflected session |
 
-## Two modes
+## Operation
 
-### `auto-harness` (default) — interactive chat
+### Interactive REPL (always-on)
 
-Interactive REPL with async stdin queue (background thread → `VecDeque`). LLM replies are printed; all events go to traj. Runs until Ctrl+C or EOF.
+Async stdin queue (background thread → `VecDeque`). LLM replies printed; all events go to traj. Runs until `/exit`, Ctrl+C, or EOF.
+
+Slash commands:
+- `/exit` — clean shutdown
+- `/evolve` — run evolution loop, then re-exec the updated binary (same process slot)
 
 Task grouping: the LLM judges each new message as `NEW` or `CONTINUE`. Each task gets its own output directory `outputs/<ts>/task_N`.
 
-### `auto-harness evolve` — reflection + code evolution
+### `/evolve` — reflection + code evolution
 
 1. **Reflect**: reads session trajs newer than the watermark → asks LLM for one concrete improvement suggestion → advances watermark.
 2. **Evolve**: up to `MAX_ITERS` iterations. Each iter shows the LLM `src/main.rs` + `src/AGENTS.md` → LLM proposes one change via `write_self` or `write_file` → verified. Stops on `SKIP` or `PATIENCE` consecutive non-improving iters.
 3. **Doc update**: after the loop, LLM rewrites `CLAUDE.md` and `README.md` via `write_file`.
 4. **Lint + test**: `cargo clippy -- -D warnings` then `cargo test --release`; results logged to traj as `lint_result`/`test_result`; failures print a WARNING to stderr.
+5. **Relaunch**: `exec()` replaces the current process with the freshly-built binary.
 
 ## Evolvable artifacts
 
@@ -138,7 +142,8 @@ src/
 rm -rf .evo/ outputs/
 
 # Re-run reflection on already-processed sessions
-rm .evo/learned_until.txt && ./target/release/auto-harness evolve
+rm .evo/learned_until.txt
+# then type /evolve inside the running harness
 
 # Inspect trajectories
 cat .evo/sessions/<ts>/traj.jsonl | jq .
